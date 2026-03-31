@@ -39,17 +39,17 @@ const portraitTuning = {
   alphaThreshold: 22,
   darkThreshold: 166,
   fadeThreshold: 218,
-  edgeFade: 0.12,
-  edgeParticleChance: 0.52,
-  edgeParticleSpread: 18,
-  edgeParticleAlpha: 0.34,
-  edgeParticleDrift: 1.2,
+  edgeFade: 0.18,
+  edgeParticleChance: 0.74,
+  edgeParticleSpread: 28,
+  edgeParticleAlpha: 0.42,
+  edgeParticleDrift: 1.85,
   repelRadius: 146,
   repelForce: 16,
   ease: 0.1,
   drift: 0.28,
-  widthRatio: 0.92,
-  heightRatio: 1.02,
+  widthRatio: 1.03,
+  heightRatio: 1.1,
   glowAlpha: 0.08,
   buildBitDensity: 1,
   buildSpread: 190,
@@ -109,18 +109,12 @@ let activeSkillCell = null;
 
 const embeddedPortraitSource =
   typeof window.__PORTRAIT_IMAGE_DATA__ === "string" ? window.__PORTRAIT_IMAGE_DATA__ : "";
-const portraitImageCandidates = embeddedPortraitSource
-  ? [
-      { label: "embedded profile.jpg", src: embeddedPortraitSource },
-      { label: "images/profile.jpg", src: "images/profile.jpg" },
-      { label: "images/profile.png", src: "images/profile.png" },
-      { label: "images/photo.jpg", src: "images/photo.jpg" },
-    ]
-  : [
-      { label: "images/profile.jpg", src: "images/profile.jpg" },
-      { label: "images/profile.png", src: "images/profile.png" },
-      { label: "images/photo.jpg", src: "images/photo.jpg" },
-    ];
+const portraitImageCandidates = [
+  { label: "images/profile.png", src: "images/profile.png", bustCache: true },
+  { label: "embedded profile", src: embeddedPortraitSource },
+  { label: "images/profile.jpg", src: "images/profile.jpg", bustCache: true },
+  { label: "images/photo.jpg", src: "images/photo.jpg", bustCache: true },
+].filter((candidate) => Boolean(candidate.src));
 
 const buildState = {
   progress: 0,
@@ -136,6 +130,7 @@ let portraitBounds = { x: 0, y: 0, width: 0, height: 0 };
 let portraitCandidateIndex = 0;
 let currentPalette = getThemePalette();
 let bootSequenceStarted = false;
+let portraitFallbackTriggered = false;
 
 yearElement.textContent = String(new Date().getFullYear());
 assignRevealDelays();
@@ -372,39 +367,23 @@ function initializePreviewFallbacks() {
   });
 }
 
-function setupInfiniteSkills() {
-  Array.from(skillTrack.querySelectorAll(".skill-cell.is-clone")).forEach((cell) => cell.remove());
-
-  const originals = Array.from(skillTrack.querySelectorAll(".skill-cell"));
-  skillOriginalCount = originals.length;
-
-  originals.forEach((cell, index) => {
+function initializeSkillsRail() {
+  skillCells = Array.from(skillTrack.querySelectorAll(".skill-cell"));
+  skillOriginalCount = skillCells.length;
+  skillCells.forEach((cell, index) => {
     cell.dataset.skillIndex = String(index);
-    cell.dataset.clone = "false";
   });
 
-  const headClones = originals.map((cell) => createSkillClone(cell));
-  const tailClones = originals.map((cell) => createSkillClone(cell));
-
-  tailClones.forEach((clone) => skillTrack.prepend(clone));
-  headClones.forEach((clone) => skillTrack.append(clone));
-
-  skillCells = Array.from(skillTrack.querySelectorAll(".skill-cell"));
-}
-
-function initializeSkillsRail() {
-  setupInfiniteSkills();
   initializeScrollableRail(skillTrack, {
-    onScrollEnd: updateActiveSkill,
-    onSettle: snapSkillsTrack,
-    onNormalize: normalizeSkillsLoop,
+    onScrollEnd: () => updateActiveSkill(),
+    onSettle: (rail) => snapRailToCurrentIndex(rail),
+    onIndexChange: () => updateActiveSkill(),
   });
 
   skillsPrev?.addEventListener("click", () => moveSkillsBy(-1));
   skillsNext?.addEventListener("click", () => moveSkillsBy(1));
   requestAnimationFrame(() => {
-    normalizeSkillsLoop(true);
-    centerSkillByIndex(0, "auto");
+    scrollRailToIndex(skillTrack, 0, "auto");
     updateActiveSkill();
   });
 }
@@ -413,27 +392,36 @@ function initializeProjectRails() {
   railElements
     .filter((rail) => rail !== skillTrack)
     .forEach((rail) => {
-      initializeScrollableRail(rail);
+      initializeScrollableRail(rail, {
+        onSettle: (targetRail) => snapRailToCurrentIndex(targetRail),
+      });
     });
 
-  bindRailArrows(document.getElementById("dashboard-track"), dashboardPrev, dashboardNext);
-  bindRailArrows(document.getElementById("software-track"), softwarePrev, softwareNext);
+  bindRailArrows(document.getElementById("dashboard-track"), dashboardPrev, dashboardNext, true);
+  bindRailArrows(document.getElementById("software-track"), softwarePrev, softwareNext, true);
 }
 
 function initializeScrollableRail(rail, options = {}) {
   const railState = {
     targetScrollLeft: rail.scrollLeft,
+    currentIndex: 0,
+    visibleItems: 1,
     settleTimer: null,
     onScrollEnd: options.onScrollEnd || null,
     onSettle: options.onSettle || null,
-    onNormalize: options.onNormalize || null,
+    onIndexChange: options.onIndexChange || null,
   };
 
   railStates.set(rail, railState);
+  updateRailMetrics(rail, railState);
 
   rail.addEventListener("scroll", throttle(() => {
-    if (railState.onNormalize) {
-      railState.onNormalize();
+    const nextIndex = getRailIndexFromScroll(rail, railState);
+    if (nextIndex !== railState.currentIndex) {
+      railState.currentIndex = nextIndex;
+      if (railState.onIndexChange) {
+        railState.onIndexChange(rail, railState);
+      }
     }
 
     railState.targetScrollLeft = rail.scrollLeft;
@@ -469,8 +457,14 @@ function setRailTarget(rail, railState, nextValue) {
   });
 }
 
-function bindRailArrows(rail, prevButton, nextButton) {
+function bindRailArrows(rail, prevButton, nextButton, loopByCard = false) {
   if (!rail) {
+    return;
+  }
+
+  if (loopByCard) {
+    prevButton?.addEventListener("click", () => moveProjectByItem(rail, -1));
+    nextButton?.addEventListener("click", () => moveProjectByItem(rail, 1));
     return;
   }
 
@@ -490,62 +484,123 @@ function moveRailByPage(rail, direction) {
   setRailTarget(rail, state, rail.scrollLeft + delta);
 }
 
-function createSkillClone(cell) {
-  const clone = cell.cloneNode(true);
-  clone.classList.remove("is-active", "is-meter-animating");
-  clone.classList.add("is-clone");
-  clone.dataset.skillIndex = cell.dataset.skillIndex;
-  clone.dataset.clone = "true";
-  return clone;
-}
-
-function getOriginalSkillCells() {
-  return skillCells.filter((cell) => cell.dataset.clone !== "true");
-}
-
-function getNearestSkillCellForIndex(index) {
-  const matchingCells = skillCells.filter((cell) => Number(cell.dataset.skillIndex) === index);
-
-  if (matchingCells.length === 0) {
-    return null;
+function getRailItems(rail) {
+  if (rail === skillTrack) {
+    return Array.from(rail.querySelectorAll(".skill-cell"));
   }
 
-  const currentCenter = skillTrack.scrollLeft + skillTrack.clientWidth * 0.5;
-  return matchingCells.reduce((closest, cell) => {
-    const cellCenter = cell.offsetLeft + cell.offsetWidth * 0.5;
-    if (!closest) {
-      return cell;
+  return Array.from(rail.querySelectorAll(".display-card"));
+}
+
+function updateRailMetrics(rail, railState = railStates.get(rail)) {
+  if (!railState) {
+    return;
+  }
+
+  const items = getRailItems(rail);
+  if (items.length === 0) {
+    railState.visibleItems = 1;
+    railState.currentIndex = 0;
+    return;
+  }
+
+  const firstItem = items[0];
+  const itemWidth = firstItem.getBoundingClientRect().width;
+  const railStyle = getComputedStyle(rail);
+  const gap = Number.parseFloat(railStyle.columnGap || railStyle.gap || "0") || 0;
+  const fullItemWidth = itemWidth + gap;
+  const visibleItems = fullItemWidth > 0
+    ? Math.max(1, Math.floor((rail.clientWidth + gap) / fullItemWidth))
+    : 1;
+
+  railState.visibleItems = Math.min(items.length, visibleItems);
+  railState.currentIndex = clamp(railState.currentIndex, 0, getRailMaxIndex(rail, railState));
+}
+
+function getRailMaxIndex(rail, railState = railStates.get(rail)) {
+  const items = getRailItems(rail);
+  const visibleItems = railState?.visibleItems || 1;
+  return Math.max(0, items.length - visibleItems);
+}
+
+function getRailIndexFromScroll(rail, railState = railStates.get(rail)) {
+  const items = getRailItems(rail);
+  if (items.length === 0) {
+    return 0;
+  }
+
+  const scrollLeft = rail.scrollLeft;
+  let closestIndex = 0;
+  let closestDistance = Number.POSITIVE_INFINITY;
+
+  items.forEach((item, index) => {
+    const distance = Math.abs(item.offsetLeft - scrollLeft);
+    if (distance < closestDistance) {
+      closestDistance = distance;
+      closestIndex = index;
     }
+  });
 
-    const closestCenter = closest.offsetLeft + closest.offsetWidth * 0.5;
-    return Math.abs(cellCenter - currentCenter) < Math.abs(closestCenter - currentCenter) ? cell : closest;
-  }, null);
+  return clamp(closestIndex, 0, getRailMaxIndex(rail, railState));
 }
 
-function normalizeSkillsLoop(forceCenter = false) {
-  const originals = getOriginalSkillCells();
-
-  if (originals.length === 0) {
+function scrollRailToIndex(rail, index, behavior = "smooth") {
+  const railState = railStates.get(rail);
+  if (!railState) {
     return;
   }
 
-  const firstOriginal = originals[0];
-  const lastOriginal = originals[originals.length - 1];
-  const loopStart = firstOriginal.offsetLeft;
-  const loopEnd = lastOriginal.offsetLeft + lastOriginal.offsetWidth;
-  const loopSpan = loopEnd - loopStart;
-  const center = skillTrack.scrollLeft + skillTrack.clientWidth * 0.5;
+  updateRailMetrics(rail, railState);
+  const items = getRailItems(rail);
+  const boundedIndex = clamp(index, 0, getRailMaxIndex(rail, railState));
+  const targetItem = items[boundedIndex];
 
-  if (forceCenter) {
-    skillTrack.scrollLeft = loopStart - Math.max(0, (skillTrack.clientWidth - firstOriginal.offsetWidth) * 0.5);
+  if (!targetItem) {
     return;
   }
 
-  if (center < loopStart) {
-    skillTrack.scrollLeft += loopSpan;
-  } else if (center > loopEnd) {
-    skillTrack.scrollLeft -= loopSpan;
+  railState.currentIndex = boundedIndex;
+  if (railState.onIndexChange) {
+    railState.onIndexChange(rail, railState);
   }
+
+  const targetLeft = targetItem.offsetLeft;
+
+  if (!railState) {
+    rail.scrollTo({ left: targetLeft, behavior });
+    return;
+  }
+
+  railState.targetScrollLeft = targetLeft;
+  rail.scrollTo({ left: targetLeft, behavior });
+
+  if (behavior === "auto") {
+    rail.scrollLeft = targetLeft;
+  }
+}
+
+function moveProjectByItem(rail, direction) {
+  const railState = railStates.get(rail);
+  if (!railState) {
+    return;
+  }
+
+  updateRailMetrics(rail, railState);
+  const nextIndex = clamp(
+    railState.currentIndex + direction,
+    0,
+    getRailMaxIndex(rail, railState)
+  );
+  scrollRailToIndex(rail, nextIndex, "smooth");
+}
+
+function snapRailToCurrentIndex(rail) {
+  const railState = railStates.get(rail);
+  if (!railState) {
+    return;
+  }
+
+  scrollRailToIndex(rail, railState.currentIndex, "smooth");
 }
 
 function syncRails() {
@@ -555,66 +610,40 @@ function syncRails() {
       return;
     }
 
+    updateRailMetrics(rail, state);
     state.targetScrollLeft = rail.scrollLeft;
+    scrollRailToIndex(rail, state.currentIndex, "auto");
   });
-}
-
-function centerSkillByIndex(index, behavior = "smooth") {
-  const targetCell = getNearestSkillCellForIndex(index);
-
-  if (!targetCell) {
-    return;
-  }
-
-  const state = railStates.get(skillTrack);
-  const targetLeft = clamp(
-    targetCell.offsetLeft + targetCell.offsetWidth * 0.5 - skillTrack.clientWidth * 0.5,
-    0,
-    Math.max(0, skillTrack.scrollWidth - skillTrack.clientWidth)
-  );
-
-  if (!state) {
-    skillTrack.scrollTo({ left: targetLeft, behavior });
-    return;
-  }
-
-  state.targetScrollLeft = targetLeft;
-  skillTrack.scrollTo({ left: targetLeft, behavior });
-
-  if (behavior === "auto") {
-    skillTrack.scrollLeft = targetLeft;
-  }
 }
 
 function moveSkillsBy(direction) {
-  const activeCell = getClosestSkillCell();
-  const activeIndex = activeCell ? Number(activeCell.dataset.skillIndex) : 0;
-  const nextIndex = (activeIndex + direction + skillOriginalCount) % skillOriginalCount;
-  centerSkillByIndex(nextIndex, "smooth");
-}
+  const railState = railStates.get(skillTrack);
+  if (!railState) {
+    return;
+  }
 
-function getClosestSkillCell() {
-  const trackRect = skillTrack.getBoundingClientRect();
-  const trackCenter = trackRect.left + trackRect.width * 0.5;
-  let closestCell = null;
-  let closestDistance = Number.POSITIVE_INFINITY;
-
-  skillCells.forEach((cell) => {
-    const rect = cell.getBoundingClientRect();
-    const center = rect.left + rect.width * 0.5;
-    const distance = Math.abs(center - trackCenter);
-
-    if (distance < closestDistance) {
-      closestDistance = distance;
-      closestCell = cell;
-    }
-  });
-
-  return closestCell;
+  updateRailMetrics(skillTrack, railState);
+  const nextIndex = clamp(
+    railState.currentIndex + direction,
+    0,
+    getRailMaxIndex(skillTrack, railState)
+  );
+  scrollRailToIndex(skillTrack, nextIndex, "smooth");
 }
 
 function updateActiveSkill() {
-  const activeCell = getClosestSkillCell();
+  const railState = railStates.get(skillTrack);
+  if (!railState) {
+    return;
+  }
+
+  updateRailMetrics(skillTrack, railState);
+  const activeIndex = clamp(
+    railState.currentIndex + Math.floor((railState.visibleItems - 1) / 2),
+    0,
+    Math.max(0, skillCells.length - 1)
+  );
+  const activeCell = skillCells[activeIndex] || null;
 
   if (activeCell === activeSkillCell) {
     return;
@@ -630,14 +659,6 @@ function updateActiveSkill() {
     void activeCell.offsetWidth;
     activeCell.classList.add("is-meter-animating");
   }
-}
-
-function snapSkillsTrack() {
-  const activeCell = getClosestSkillCell();
-  if (!activeCell) {
-    return;
-  }
-  centerSkillByIndex(Number(activeCell.dataset.skillIndex), "smooth");
 }
 
 function initializePortraitTilt() {
@@ -674,7 +695,7 @@ function initializePortraitLoading() {
     portraitCandidateIndex += 1;
 
     if (portraitCandidateIndex < portraitImageCandidates.length) {
-      sourceImage.src = portraitImageCandidates[portraitCandidateIndex].src;
+      sourceImage.src = getPortraitCandidateSrc(portraitImageCandidates[portraitCandidateIndex]);
       return;
     }
 
@@ -682,7 +703,20 @@ function initializePortraitLoading() {
     runIntroTyping();
   });
 
-  sourceImage.src = portraitImageCandidates[portraitCandidateIndex].src;
+  sourceImage.src = getPortraitCandidateSrc(portraitImageCandidates[portraitCandidateIndex]);
+}
+
+function getPortraitCandidateSrc(candidate) {
+  if (!candidate?.src) {
+    return "";
+  }
+
+  if (!candidate.bustCache) {
+    return candidate.src;
+  }
+
+  const separator = candidate.src.includes("?") ? "&" : "?";
+  return `${candidate.src}${separator}v=${Date.now()}`;
 }
 
 function resizeCanvas() {
@@ -729,7 +763,22 @@ function buildPortraitMap() {
 
   const baseStep = canvasWidth <= 640 ? portraitTuning.stepMobile : portraitTuning.stepDesktop;
   const sampleStep = Math.max(2, Math.round(baseStep / Math.max(0.75, portraitTuning.buildBitDensity)));
-  const data = sourceContext.getImageData(0, 0, width, height).data;
+  let data;
+
+  try {
+    data = sourceContext.getImageData(0, 0, width, height).data;
+  } catch (error) {
+    if (tryNextPortraitCandidate()) {
+      return;
+    }
+
+    portraitReady = false;
+    portraitDots.length = 0;
+    edgeDots.length = 0;
+    focusNodes.length = 0;
+    runIntroTyping();
+    return;
+  }
 
   portraitDots.length = 0;
   edgeDots.length = 0;
@@ -810,6 +859,23 @@ function buildPortraitMap() {
   }
 }
 
+function tryNextPortraitCandidate() {
+  if (portraitFallbackTriggered) {
+    return false;
+  }
+
+  portraitCandidateIndex += 1;
+
+  if (portraitCandidateIndex >= portraitImageCandidates.length) {
+    return false;
+  }
+
+  portraitFallbackTriggered = true;
+  portraitReady = false;
+  sourceImage.src = getPortraitCandidateSrc(portraitImageCandidates[portraitCandidateIndex]);
+  return true;
+}
+
 function getBuildSourcePoint(progress) {
   const side = Math.floor(Math.random() * 4);
   const spread = portraitTuning.buildSpread;
@@ -846,10 +912,13 @@ function getPortraitFade(x, y, width, height) {
   const fadeDistance = Math.max(8, Math.min(width, height) * portraitTuning.edgeFade);
   const baseFade = clamp(edgeDistance / fadeDistance, 0, 1);
   const sideDistance = Math.min(x, width - x);
-  const sideFadeDistance = Math.max(18, width * 0.16);
+  const sideFadeDistance = Math.max(28, width * 0.22);
   const sideFade = easeOutQuad(clamp(sideDistance / sideFadeDistance, 0, 1));
+  const bottomDistance = height - y;
+  const bottomFadeDistance = Math.max(30, height * 0.24);
+  const bottomFade = easeOutQuad(clamp(bottomDistance / bottomFadeDistance, 0, 1));
 
-  return baseFade * sideFade;
+  return baseFade * sideFade * bottomFade;
 }
 
 function renderLoop(timestamp) {
@@ -973,7 +1042,6 @@ function animateRails() {
     }
 
     if (rail === skillTrack) {
-      normalizeSkillsLoop();
       updateActiveSkill();
     }
   });
@@ -1143,7 +1211,7 @@ function drawFallbackMessage() {
   context.fillText("portrait unavailable", canvasWidth * 0.5, canvasHeight * 0.48);
   context.fillStyle = currentPalette.muted;
   context.font = '16px "Share Tech Mono", monospace';
-  context.fillText("check portrait-image-data.js or images/profile.jpg", canvasWidth * 0.5, canvasHeight * 0.55);
+  context.fillText("check portrait-image-data.js or images/profile.png", canvasWidth * 0.5, canvasHeight * 0.55);
   context.restore();
 }
 
