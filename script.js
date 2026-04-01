@@ -12,8 +12,10 @@ const skillsPrev = document.getElementById("skills-prev");
 const skillsNext = document.getElementById("skills-next");
 const dashboardPrev = document.getElementById("dashboard-prev");
 const dashboardNext = document.getElementById("dashboard-next");
+const dashboardPosition = document.getElementById("dashboard-position");
 const softwarePrev = document.getElementById("software-prev");
 const softwareNext = document.getElementById("software-next");
+const softwarePosition = document.getElementById("software-position");
 const portraitTerminal = document.getElementById("portrait-terminal");
 const canvas = document.getElementById("hero-canvas");
 const context = canvas.getContext("2d", { alpha: true });
@@ -76,6 +78,16 @@ const cursorGlowTuning = {
 const edgeScrollTuning = {
   smoothness: 0.18,
   arrowStepRatio: 0.82,
+};
+
+const railAnimationTuning = {
+  duration: 320,
+  easing: "cubic-bezier(0.22, 1, 0.36, 1)",
+  offset: 20,
+};
+
+const railLoopTuning = {
+  settleDelay: 120,
 };
 
 const pointerState = {
@@ -368,120 +380,73 @@ function initializePreviewFallbacks() {
 }
 
 function initializeSkillsRail() {
-  skillCells = Array.from(skillTrack.querySelectorAll(".skill-cell"));
-  skillOriginalCount = skillCells.length;
-  skillCells.forEach((cell, index) => {
-    cell.dataset.skillIndex = String(index);
-  });
-
-  initializeScrollableRail(skillTrack, {
-    onScrollEnd: () => updateActiveSkill(),
-    onSettle: (rail) => snapRailToCurrentIndex(rail),
-    onIndexChange: () => updateActiveSkill(),
-  });
-
-  skillsPrev?.addEventListener("click", () => moveSkillsBy(-1));
-  skillsNext?.addEventListener("click", () => moveSkillsBy(1));
-  requestAnimationFrame(() => {
-    scrollRailToIndex(skillTrack, 0, "auto");
-    updateActiveSkill();
+  initializeLoopingRail(skillTrack, {
+    prevButton: skillsPrev,
+    nextButton: skillsNext,
+    labelNode: null,
+    visibleCount: 5,
   });
 }
 
 function initializeProjectRails() {
-  railElements
-    .filter((rail) => rail !== skillTrack)
-    .forEach((rail) => {
-      initializeScrollableRail(rail, {
-        onSettle: (targetRail) => snapRailToCurrentIndex(targetRail),
-      });
+  [
+    {
+      rail: document.getElementById("dashboard-track"),
+      prevButton: dashboardPrev,
+      nextButton: dashboardNext,
+      labelNode: dashboardPosition,
+      visibleCount: 3,
+    },
+    {
+      rail: document.getElementById("software-track"),
+      prevButton: softwarePrev,
+      nextButton: softwareNext,
+      labelNode: softwarePosition,
+      visibleCount: 3,
+    },
+  ].forEach(({ rail, prevButton, nextButton, labelNode, visibleCount }) => {
+    initializeLoopingRail(rail, {
+      prevButton,
+      nextButton,
+      labelNode,
+      visibleCount,
     });
-
-  bindRailArrows(document.getElementById("dashboard-track"), dashboardPrev, dashboardNext, true);
-  bindRailArrows(document.getElementById("software-track"), softwarePrev, softwareNext, true);
-}
-
-function initializeScrollableRail(rail, options = {}) {
-  const railState = {
-    targetScrollLeft: rail.scrollLeft,
-    currentIndex: 0,
-    visibleItems: 1,
-    settleTimer: null,
-    onScrollEnd: options.onScrollEnd || null,
-    onSettle: options.onSettle || null,
-    onIndexChange: options.onIndexChange || null,
-  };
-
-  railStates.set(rail, railState);
-  updateRailMetrics(rail, railState);
-
-  rail.addEventListener("scroll", throttle(() => {
-    const nextIndex = getRailIndexFromScroll(rail, railState);
-    if (nextIndex !== railState.currentIndex) {
-      railState.currentIndex = nextIndex;
-      if (railState.onIndexChange) {
-        railState.onIndexChange(rail, railState);
-      }
-    }
-
-    railState.targetScrollLeft = rail.scrollLeft;
-
-    if (railState.onScrollEnd) {
-      railState.onScrollEnd();
-    }
-    queueRailSettle(rail, railState);
-  }, 60));
-}
-
-function queueRailSettle(rail, railState) {
-  if (!railState.onSettle) {
-    return;
-  }
-
-  window.clearTimeout(railState.settleTimer);
-  railState.settleTimer = window.setTimeout(() => {
-    railState.onSettle(rail);
-  }, 170);
-}
-
-function setRailTarget(rail, railState, nextValue) {
-  railState.targetScrollLeft = clamp(
-    nextValue,
-    0,
-    Math.max(0, rail.scrollWidth - rail.clientWidth)
-  );
-
-  rail.scrollTo({
-    left: railState.targetScrollLeft,
-    behavior: "smooth",
   });
 }
 
-function bindRailArrows(rail, prevButton, nextButton, loopByCard = false) {
+function initializeLoopingRail(rail, options = {}) {
   if (!rail) {
     return;
   }
 
-  if (loopByCard) {
-    prevButton?.addEventListener("click", () => moveProjectByItem(rail, -1));
-    nextButton?.addEventListener("click", () => moveProjectByItem(rail, 1));
-    return;
-  }
+  const railState = {
+    currentIndex: 0,
+    physicalIndex: 0,
+    originalCount: 0,
+    cloneCount: 0,
+    visibleCount: Math.max(1, options.visibleCount || 1),
+    settleTimer: null,
+    itemStep: 0,
+    totalSpan: 0,
+    isAdjusting: false,
+    labelNode: options.labelNode || null,
+  };
 
-  prevButton?.addEventListener("click", () => moveRailByPage(rail, -1));
-  nextButton?.addEventListener("click", () => moveRailByPage(rail, 1));
-}
+  railStates.set(rail, railState);
+  rebuildLoopingRail(rail, 0);
 
-function moveRailByPage(rail, direction) {
-  const state = railStates.get(rail);
-  const delta = rail.clientWidth * edgeScrollTuning.arrowStepRatio * direction;
+  rail.addEventListener("scroll", throttle(() => {
+    if (railState.isAdjusting) {
+      return;
+    }
 
-  if (!state) {
-    rail.scrollBy({ left: delta, behavior: "smooth" });
-    return;
-  }
+    syncRailStateFromScroll(rail, railState);
+    updateRailUI(rail, railState);
+    queueRailSettle(rail, railState);
+  }, 60));
 
-  setRailTarget(rail, state, rail.scrollLeft + delta);
+  options.prevButton?.addEventListener("click", () => moveRailByItem(rail, -1));
+  options.nextButton?.addEventListener("click", () => moveRailByItem(rail, 1));
 }
 
 function getRailItems(rail) {
@@ -492,38 +457,82 @@ function getRailItems(rail) {
   return Array.from(rail.querySelectorAll(".display-card"));
 }
 
-function updateRailMetrics(rail, railState = railStates.get(rail)) {
+function getOriginalRailItems(rail) {
+  return getRailItems(rail).filter((item) => item.dataset.clone !== "true");
+}
+
+function createRailClone(item) {
+  const clone = item.cloneNode(true);
+  clone.dataset.clone = "true";
+  clone.setAttribute("aria-hidden", "true");
+  return clone;
+}
+
+function rebuildLoopingRail(rail, preserveIndex = 0) {
+  const railState = railStates.get(rail);
   if (!railState) {
     return;
   }
 
-  const items = getRailItems(rail);
-  if (items.length === 0) {
-    railState.visibleItems = 1;
-    railState.currentIndex = 0;
+  Array.from(rail.querySelectorAll('[data-clone="true"]')).forEach((item) => item.remove());
+
+  const originals = getOriginalRailItems(rail);
+  if (originals.length === 0) {
     return;
   }
 
-  const firstItem = items[0];
-  const itemWidth = firstItem.getBoundingClientRect().width;
-  const railStyle = getComputedStyle(rail);
-  const gap = Number.parseFloat(railStyle.columnGap || railStyle.gap || "0") || 0;
-  const fullItemWidth = itemWidth + gap;
-  const visibleItems = fullItemWidth > 0
-    ? Math.max(1, Math.floor((rail.clientWidth + gap) / fullItemWidth))
-    : 1;
+  originals.forEach((item, index) => {
+    item.dataset.clone = "false";
+    item.dataset.railIndex = String(index);
+    if (rail === skillTrack) {
+      item.dataset.skillIndex = String(index);
+    }
+  });
 
-  railState.visibleItems = Math.min(items.length, visibleItems);
-  railState.currentIndex = clamp(railState.currentIndex, 0, getRailMaxIndex(rail, railState));
+  railState.originalCount = originals.length;
+  railState.cloneCount = Math.min(railState.visibleCount, originals.length);
+
+  const prependClones = originals.slice(-railState.cloneCount).map((item) => createRailClone(item));
+  const appendClones = originals.slice(0, railState.cloneCount).map((item) => createRailClone(item));
+
+  prependClones.forEach((clone) => rail.prepend(clone));
+  appendClones.forEach((clone) => rail.append(clone));
+
+  if (rail === skillTrack) {
+    skillCells = Array.from(rail.querySelectorAll(".skill-cell"));
+    skillOriginalCount = originals.length;
+  }
+
+  measureRailGeometry(rail, railState);
+  railState.currentIndex = mod(preserveIndex, railState.originalCount);
+  railState.physicalIndex = railState.cloneCount + railState.currentIndex;
+  scrollRailToPhysicalIndex(rail, railState.physicalIndex, "auto");
+  updateRailUI(rail, railState);
 }
 
-function getRailMaxIndex(rail, railState = railStates.get(rail)) {
+function measureRailGeometry(rail, railState) {
   const items = getRailItems(rail);
-  const visibleItems = railState?.visibleItems || 1;
-  return Math.max(0, items.length - visibleItems);
+  if (!railState || items.length === 0) {
+    return;
+  }
+
+  if (items.length > 1) {
+    railState.itemStep = items[1].offsetLeft - items[0].offsetLeft;
+  } else {
+    railState.itemStep = items[0].offsetWidth;
+  }
+
+  railState.totalSpan = railState.itemStep * railState.originalCount;
 }
 
-function getRailIndexFromScroll(rail, railState = railStates.get(rail)) {
+function queueRailSettle(rail, railState) {
+  window.clearTimeout(railState.settleTimer);
+  railState.settleTimer = window.setTimeout(() => {
+    finalizeRailPosition(rail);
+  }, railLoopTuning.settleDelay);
+}
+
+function getNearestPhysicalIndex(rail) {
   const items = getRailItems(rail);
   if (items.length === 0) {
     return 0;
@@ -541,109 +550,118 @@ function getRailIndexFromScroll(rail, railState = railStates.get(rail)) {
     }
   });
 
-  return clamp(closestIndex, 0, getRailMaxIndex(rail, railState));
+  return closestIndex;
 }
 
-function scrollRailToIndex(rail, index, behavior = "smooth") {
-  const railState = railStates.get(rail);
-  if (!railState) {
+function syncRailStateFromScroll(rail, railState = railStates.get(rail)) {
+  if (!railState || railState.originalCount === 0) {
     return;
   }
 
-  updateRailMetrics(rail, railState);
+  const nextPhysicalIndex = getNearestPhysicalIndex(rail);
+  railState.physicalIndex = nextPhysicalIndex;
+  railState.currentIndex = mod(nextPhysicalIndex - railState.cloneCount, railState.originalCount);
+}
+
+function scrollRailToPhysicalIndex(rail, physicalIndex, behavior = "smooth") {
   const items = getRailItems(rail);
-  const boundedIndex = clamp(index, 0, getRailMaxIndex(rail, railState));
-  const targetItem = items[boundedIndex];
+  const targetItem = items[physicalIndex];
+  const railState = railStates.get(rail);
 
-  if (!targetItem) {
+  if (!targetItem || !railState) {
     return;
   }
 
-  railState.currentIndex = boundedIndex;
-  if (railState.onIndexChange) {
-    railState.onIndexChange(rail, railState);
-  }
-
-  const targetLeft = targetItem.offsetLeft;
-
-  if (!railState) {
-    rail.scrollTo({ left: targetLeft, behavior });
-    return;
-  }
-
-  railState.targetScrollLeft = targetLeft;
-  rail.scrollTo({ left: targetLeft, behavior });
+  railState.physicalIndex = physicalIndex;
+  rail.scrollTo({
+    left: targetItem.offsetLeft,
+    behavior,
+  });
 
   if (behavior === "auto") {
-    rail.scrollLeft = targetLeft;
+    rail.scrollLeft = targetItem.offsetLeft;
   }
 }
 
-function moveProjectByItem(rail, direction) {
+function moveRailByItem(rail, direction) {
   const railState = railStates.get(rail);
-  if (!railState) {
+  if (!railState || railState.originalCount === 0) {
     return;
   }
 
-  updateRailMetrics(rail, railState);
-  const nextIndex = clamp(
-    railState.currentIndex + direction,
-    0,
-    getRailMaxIndex(rail, railState)
-  );
-  scrollRailToIndex(rail, nextIndex, "smooth");
+  railState.currentIndex = mod(railState.currentIndex + direction, railState.originalCount);
+  railState.physicalIndex += direction;
+  scrollRailToPhysicalIndex(rail, railState.physicalIndex, "smooth");
+  updateRailUI(rail, railState);
 }
 
-function snapRailToCurrentIndex(rail) {
+function normalizeRailScrollPosition(rail, railState = railStates.get(rail)) {
+  if (!railState || railState.originalCount === 0) {
+    return false;
+  }
+
+  const lowerBound = railState.cloneCount;
+  const upperBound = railState.cloneCount + railState.originalCount - 1;
+
+  if (railState.physicalIndex < lowerBound || railState.physicalIndex > upperBound) {
+    const offset = railState.physicalIndex < lowerBound ? railState.totalSpan : -railState.totalSpan;
+    railState.isAdjusting = true;
+    const previousScrollBehavior = rail.style.scrollBehavior;
+    rail.style.scrollBehavior = "auto";
+    rail.scrollLeft += offset;
+    rail.style.scrollBehavior = previousScrollBehavior;
+    railState.isAdjusting = false;
+    railState.physicalIndex += railState.physicalIndex < lowerBound ? railState.originalCount : -railState.originalCount;
+    return true;
+  }
+
+  return false;
+}
+
+function finalizeRailPosition(rail) {
   const railState = railStates.get(rail);
-  if (!railState) {
+  if (!railState || railState.originalCount === 0) {
     return;
   }
 
-  scrollRailToIndex(rail, railState.currentIndex, "smooth");
+  syncRailStateFromScroll(rail, railState);
+  normalizeRailScrollPosition(rail, railState);
+  syncRailStateFromScroll(rail, railState);
+  updateRailUI(rail, railState);
 }
 
 function syncRails() {
   railElements.forEach((rail) => {
-    const state = railStates.get(rail);
-    if (!state) {
+    const railState = railStates.get(rail);
+    if (!railState) {
       return;
     }
 
-    updateRailMetrics(rail, state);
-    state.targetScrollLeft = rail.scrollLeft;
-    scrollRailToIndex(rail, state.currentIndex, "auto");
+    rebuildLoopingRail(rail, railState.currentIndex);
   });
 }
 
 function moveSkillsBy(direction) {
-  const railState = railStates.get(skillTrack);
-  if (!railState) {
-    return;
+  moveRailByItem(skillTrack, direction);
+}
+
+function getRailActiveOffset(railState) {
+  if (!railState || railState.originalCount === 0) {
+    return 0;
   }
 
-  updateRailMetrics(skillTrack, railState);
-  const nextIndex = clamp(
-    railState.currentIndex + direction,
-    0,
-    getRailMaxIndex(skillTrack, railState)
-  );
-  scrollRailToIndex(skillTrack, nextIndex, "smooth");
+  const visibleCount = Math.min(railState.visibleCount, railState.originalCount);
+  return Math.floor((visibleCount - 1) * 0.5);
 }
 
 function updateActiveSkill() {
   const railState = railStates.get(skillTrack);
-  if (!railState) {
+  if (!railState || railState.originalCount === 0) {
     return;
   }
 
-  updateRailMetrics(skillTrack, railState);
-  const activeIndex = clamp(
-    railState.currentIndex + Math.floor((railState.visibleItems - 1) / 2),
-    0,
-    Math.max(0, skillCells.length - 1)
-  );
-  const activeCell = skillCells[activeIndex] || null;
+  const activeCell =
+    getRailItems(skillTrack)[railState.physicalIndex + getRailActiveOffset(railState)] || null;
 
   if (activeCell === activeSkillCell) {
     return;
@@ -659,6 +677,44 @@ function updateActiveSkill() {
     void activeCell.offsetWidth;
     activeCell.classList.add("is-meter-animating");
   }
+}
+
+function updateRailHighlight(rail, railState = railStates.get(rail)) {
+  if (!railState || railState.originalCount === 0) {
+    return;
+  }
+
+  const activeItem =
+    getRailItems(rail)[railState.physicalIndex + getRailActiveOffset(railState)] || null;
+  getRailItems(rail).forEach((item) => {
+    item.classList.toggle("is-active", item === activeItem);
+  });
+}
+
+function updateRailPositionLabel(labelNode, railState) {
+  if (!labelNode || !railState || railState.originalCount === 0) {
+    return;
+  }
+
+  labelNode.textContent = `${railState.currentIndex + 1} of ${railState.originalCount}`;
+}
+
+function updateRailUI(rail, railState = railStates.get(rail)) {
+  if (rail === skillTrack) {
+    updateActiveSkill();
+    return;
+  }
+
+  updateRailHighlight(rail, railState);
+  updateRailPositionLabel(railState?.labelNode, railState);
+}
+
+function mod(value, divisor) {
+  if (!divisor) {
+    return 0;
+  }
+
+  return ((value % divisor) + divisor) % divisor;
 }
 
 function initializePortraitTilt() {

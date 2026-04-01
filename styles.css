@@ -753,6 +753,8 @@ body:not(.intro-ready) .terminal-module {
 .rail-controls {
   display: inline-flex;
   align-items: center;
+  justify-content: flex-end;
+  flex: 0 0 auto;
   gap: 0.45rem;
 }
 
@@ -791,19 +793,20 @@ body:not(.intro-ready) .terminal-module {
 .project-rail {
   display: grid;
   grid-auto-flow: column;
+  grid-auto-rows: 1fr;
   gap: 1rem;
   overflow-x: auto;
   scroll-snap-type: x mandatory;
+  scroll-padding-inline: 0;
   overscroll-behavior-x: contain;
+  scrollbar-width: none;
+  scroll-behavior: smooth;
+  touch-action: pan-x;
 }
 
 .skills-carousel {
-  grid-auto-columns: minmax(220px, 29%);
+  grid-auto-columns: calc((100% - 4rem) / 5);
   padding: 0.4rem 0 0.2rem;
-  scrollbar-width: none;
-  scroll-snap-type: x proximity;
-  scroll-behavior: smooth;
-  touch-action: pan-x;
 }
 
 .skills-carousel::-webkit-scrollbar {
@@ -813,7 +816,6 @@ body:not(.intro-ready) .terminal-module {
 .project-rail {
   grid-auto-columns: calc((100% - 2rem) / 3);
   padding: 0.2rem 0 0.2rem;
-  scrollbar-width: none;
 }
 
 .project-rail::-webkit-scrollbar {
@@ -822,9 +824,10 @@ body:not(.intro-ready) .terminal-module {
 
 .skill-cell,
 .display-card {
+  min-width: 0;
   border-radius: 0.9rem;
   background: var(--surface-soft);
-  scroll-snap-align: center;
+  scroll-snap-align: start;
 }
 
 .skill-cell {
@@ -898,10 +901,12 @@ body:not(.intro-ready) .terminal-module {
   gap: 0.75rem;
   min-height: 100%;
   padding: 0.8rem;
+  width: 100%;
   transition: transform 180ms ease, border-color 180ms ease;
 }
 
 .display-card:hover,
+.display-card.is-active,
 .display-card:focus-within,
 .contact-item:hover,
 .contact-item:focus-within {
@@ -935,6 +940,7 @@ body[data-theme="light"] .project-preview img {
 }
 
 .display-card:hover .project-preview img,
+.display-card.is-active .project-preview img,
 .display-card:focus-within .project-preview img {
   opacity: 1;
   filter: none;
@@ -992,6 +998,7 @@ body[data-theme="light"] .project-preview img {
 .project-body {
   display: grid;
   gap: 0.45rem;
+  min-width: 0;
 }
 
 .project-headline {
@@ -1000,6 +1007,7 @@ body[data-theme="light"] .project-preview img {
   justify-content: space-between;
   gap: 0.75rem;
   min-height: 3rem;
+  min-width: 0;
 }
 
 .project-headline-main {
@@ -1007,6 +1015,7 @@ body[data-theme="light"] .project-preview img {
   gap: 0.18rem;
   align-content: start;
   min-height: 3rem;
+  min-width: 0;
 }
 
 .project-actions {
@@ -1437,11 +1446,7 @@ body[data-theme="light"] .project-preview img {
   }
 
   .skills-carousel {
-    grid-auto-columns: minmax(240px, 42%);
-  }
-
-  .project-rail {
-    grid-auto-columns: minmax(320px, 56%);
+    grid-auto-columns: calc((100% - 4rem) / 5);
   }
 }
 
@@ -1510,14 +1515,6 @@ body[data-theme="light"] .project-preview img {
     opacity: 0;
   }
 
-  .skills-carousel {
-    grid-auto-columns: minmax(82%, 82%);
-  }
-
-  .project-rail {
-    grid-auto-columns: minmax(86%, 86%);
-  }
-
   .contact-grid {
     grid-template-columns: 1fr;
   }
@@ -1527,7 +1524,7 @@ body[data-theme="light"] .project-preview img {
 @media (hover: none), (pointer: coarse) {
   .skills-carousel,
   .project-rail {
-    scroll-snap-type: x proximity;
+    scroll-snap-type: x mandatory;
   }
 
   .cursor-particles {
