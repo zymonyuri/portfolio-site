@@ -25,6 +25,7 @@ const skillTrack = document.getElementById("skills-track");
 const railElements = Array.from(document.querySelectorAll(".skills-carousel, .project-rail"));
 const projectPreviewImages = Array.from(document.querySelectorAll(".project-preview img"));
 const coarsePointerQuery = window.matchMedia("(hover: none), (pointer: coarse)");
+const reducedMotionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
 
 const bootTuning = {
   portraitDelay: 40,
@@ -424,6 +425,7 @@ function initializeLoopingRail(rail, options = {}) {
     physicalIndex: 0,
     originalCount: 0,
     cloneCount: 0,
+    baseVisibleCount: Math.max(1, options.visibleCount || 1),
     visibleCount: Math.max(1, options.visibleCount || 1),
     settleTimer: null,
     itemStep: 0,
@@ -490,6 +492,7 @@ function rebuildLoopingRail(rail, preserveIndex = 0) {
   });
 
   railState.originalCount = originals.length;
+  railState.visibleCount = getResponsiveVisibleCount(rail, railState);
   railState.cloneCount = Math.min(railState.visibleCount, originals.length);
 
   const prependClones = originals.slice(-railState.cloneCount).map((item) => createRailClone(item));
@@ -575,7 +578,7 @@ function scrollRailToPhysicalIndex(rail, physicalIndex, behavior = "smooth") {
   railState.physicalIndex = physicalIndex;
   rail.scrollTo({
     left: targetItem.offsetLeft,
-    behavior,
+    behavior: getMotionPreferenceBehavior(behavior),
   });
 
   if (behavior === "auto") {
@@ -639,6 +642,33 @@ function syncRails() {
 
     rebuildLoopingRail(rail, railState.currentIndex);
   });
+}
+
+function getResponsiveVisibleCount(rail, railState = railStates.get(rail)) {
+  const baseVisibleCount = railState?.baseVisibleCount || 1;
+  const viewportWidth = window.innerWidth;
+
+  if (viewportWidth <= 760) {
+    return 1;
+  }
+
+  if (viewportWidth <= 900) {
+    return rail === skillTrack ? Math.min(3, baseVisibleCount) : Math.min(2, baseVisibleCount);
+  }
+
+  if (viewportWidth <= 1180) {
+    return rail === skillTrack ? Math.min(3, baseVisibleCount) : Math.min(2, baseVisibleCount);
+  }
+
+  return baseVisibleCount;
+}
+
+function getMotionPreferenceBehavior(behavior) {
+  if (behavior === "auto" || !reducedMotionQuery.matches) {
+    return behavior;
+  }
+
+  return "auto";
 }
 
 function moveSkillsBy(direction) {
@@ -719,7 +749,7 @@ function mod(value, divisor) {
 
 function initializePortraitTilt() {
   portraitTerminal.addEventListener("pointermove", (event) => {
-    if (coarsePointerQuery.matches) {
+    if (coarsePointerQuery.matches || reducedMotionQuery.matches) {
       return;
     }
 
@@ -791,9 +821,10 @@ function resizeCanvas() {
 }
 
 function buildPortraitMap() {
+  const portraitScale = getPortraitScale();
   const imageAspect = sourceImage.naturalWidth / sourceImage.naturalHeight || 1;
-  const maxWidth = canvasWidth * portraitTuning.widthRatio;
-  const maxHeight = canvasHeight * portraitTuning.heightRatio;
+  const maxWidth = canvasWidth * portraitScale.widthRatio;
+  const maxHeight = canvasHeight * portraitScale.heightRatio;
   let width = maxWidth;
   let height = width / imageAspect;
 
@@ -913,6 +944,20 @@ function buildPortraitMap() {
       }
     }
   }
+}
+
+function getPortraitScale() {
+  if (window.innerWidth <= 760) {
+    return {
+      widthRatio: 1.12,
+      heightRatio: 1.2,
+    };
+  }
+
+  return {
+    widthRatio: portraitTuning.widthRatio,
+    heightRatio: portraitTuning.heightRatio,
+  };
 }
 
 function tryNextPortraitCandidate() {
